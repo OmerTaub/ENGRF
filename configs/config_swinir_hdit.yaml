@@ -1,0 +1,77 @@
+# Configuration for SwinIR Posterior Mean + HDiT Rectified Flow
+# Balanced configuration with SwinIR for PM and HDiT for RF
+
+experiment:
+  name: engrf_swinir_hdit
+  out_dir: outputs/engrf_swinir_hdit
+  seed: 42
+
+data:
+  kind: fastmri_mask
+  train_root: /home/omertaub/data/fastMRI_brain_DICOM_slices/train/HF
+  val_root: /home/omertaub/data/fastMRI_brain_DICOM_slices/val/HF
+  img_size: [256, 256]
+
+model:
+  pmrf_only: True
+  posterior_mean: swinir
+  
+  # SwinIR Posterior Mean Configuration
+  pm_swinir:
+    in_chans: 1
+    img_size: 256
+    window_size: 8
+    embed_dim: 60
+    depths: [6, 6, 6, 6, 6, 6]
+    num_heads: [6, 6, 6, 6, 6, 6]
+    mlp_ratio: 2
+    upsampler: ""
+    resi_connection: "1conv"
+  
+  # HDiT Rectified Flow Configuration
+  rf_unet:
+    arch: hdit
+    in_channels: 1
+    patch_size: 4
+    local_widths: [384]
+    local_depths: [2]
+    global_width: 768
+    global_depth: 11
+    head_dim: 64
+    natten_kernel: 7
+    time_dim: 256
+    time_mlp_hidden: 1024
+    mlp_ratio: 4
+  
+  gauge_field:
+    in_ch_img: 1
+    in_ch_meas: 1
+    hidden: 64
+    depth: 4
+  
+  gauge_flow:
+    steps: 4
+    alpha_peak: 1.0
+
+train:
+  batch_size: 1
+  num_workers: 1
+  amp: true
+  out_dir: outputs/engrf_swinir_hdit
+  lr_pm: 1.0e-4
+  lr_stage1: 1.0e-4
+  lr_stage2: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  epochs_stage0: 100
+  epochs_stage1: 100
+  epochs_stage2: 100
+  log_interval: 500000
+  val_every: 1
+  vis_every: 1
+  vis_n: 5
+  lr_gamma: 0.9
+  lr_step_every: 0
+  lambda_conjugacy: 1.0
+  ft_rf_in_stage2: false
+

@@ -1,0 +1,69 @@
+# Baseline configuration with UNet for both Posterior Mean and Rectified Flow
+# Fast and memory-efficient for prototyping
+
+experiment:
+  name: engrf_unet_baseline
+  out_dir: outputs/engrf_unet_baseline
+  seed: 42
+
+data:
+  kind: fastmri_mask
+  train_root: /home/omertaub/data/fastMRI_brain_DICOM_slices/train/HF
+  val_root: /home/omertaub/data/fastMRI_brain_DICOM_slices/val/HF
+  img_size: [256, 256]
+
+model:
+  pmrf_only: True
+  posterior_mean: unet
+  
+  # UNet Posterior Mean Configuration
+  pm_unet:
+    in_ch: 1
+    out_ch: 1
+    base_ch: 64
+    depth: 4
+  
+  # UNet Rectified Flow Configuration
+  rf_unet:
+    arch: unet
+    in_channels: 1
+    out_channels: 1
+    base_channels: 64
+    depth: 4
+    time_dim: 256
+    time_mlp_hidden: 512
+    num_levels: 3
+    groups: 8
+  
+  gauge_field:
+    in_ch_img: 1
+    in_ch_meas: 1
+    hidden: 64
+    depth: 4
+  
+  gauge_flow:
+    steps: 4
+    alpha_peak: 1.0
+
+train:
+  batch_size: 2
+  num_workers: 2
+  amp: true
+  out_dir: outputs/engrf_unet_baseline
+  lr_pm: 1.0e-4
+  lr_stage1: 1.0e-4
+  lr_stage2: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  epochs_stage0: 100
+  epochs_stage1: 100
+  epochs_stage2: 100
+  log_interval: 500000
+  val_every: 1
+  vis_every: 1
+  vis_n: 5
+  lr_gamma: 0.9
+  lr_step_every: 0
+  lambda_conjugacy: 1.0
+  ft_rf_in_stage2: false
+
