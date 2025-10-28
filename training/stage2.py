@@ -9,6 +9,11 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from models.engrf import ENGRFAbs
+try:
+    import wandb
+    WANDB = True
+except Exception:
+    WANDB = False
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +238,13 @@ def train_stage2(
             if (it % log_interval) == 0:
                 logger.info(f"[Stage2][Ep {ep}] it={it} gfm={logs.get('gfm_loss', float('nan')):.6f} "
                             f"resid={logs.get('conj_resid', float('nan')):.6f}")
+                if WANDB:
+                    wandb.log({
+                        "train/gfm_loss": logs.get("gfm_loss"),
+                        "train/conj_resid": logs.get("conj_resid"),
+                        "epoch": ep,
+                        "iter": it,
+                    })
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
         # --------------------------- Validation --------------------------- #
@@ -278,6 +290,14 @@ def train_stage2(
             logger.info(f"  PSNR: {psnr_avg:.3f} dB")
             logger.info(f"  SSIM: {ssim_avg:.4f}")
             logger.info(f"  NMSE: {nmse_avg:.6f}")
+            if WANDB:
+                wandb.log({
+                    "val/gfm_loss": val_avg,
+                    "val/PSNR": psnr_avg,
+                    "val/SSIM": ssim_avg,
+                    "val/NMSE": nmse_avg,
+                    "epoch": ep,
+                })
 
             # Save best
             if val_avg < best_val:
@@ -305,6 +325,10 @@ def train_stage2(
                             y[i].cpu(), x_pm[i].cpu(), x_rf[i].cpu(), x_out[i].cpu(), x[i].cpu(),
                             os.path.join(viz_val_dir, f"ep{ep:03d}_idx{saved:02d}.png")  # <-- was viz_train_dir
                             )
+                            if WANDB:
+                                wandb.log({
+                                    "viz/stage2_val": wandb.Image(os.path.join(viz_val_dir, f"ep{ep:03d}_idx{saved:02d}.png"))
+                                }, commit=False)
                             saved += 1
                         if saved >= vis_n: break
             vis_n_train = int(trn.get("vis_n_train", 0))
@@ -326,6 +350,10 @@ def train_stage2(
                             y[i].cpu(), x_pm[i].cpu(), x_rf[i].cpu(), x_out[i].cpu(), x[i].cpu(),
                             os.path.join(viz_train_dir, f"ep{ep:03d}_idx{saved:02d}.png")
                         )
+                            if WANDB:
+                                wandb.log({
+                                    "viz/stage2_train": wandb.Image(os.path.join(viz_train_dir, f"ep{ep:03d}_idx{saved:02d}.png"))
+                                }, commit=False)
                             saved += 1
                         if saved >= vis_n_train: break
                 model.train()

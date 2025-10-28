@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse, os, yaml, torch, logging
+import wandb
 from torch.utils.data import DataLoader
 
 from training.stage0_pm import train_stage0_pm
@@ -99,8 +100,8 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--stage", type=int, choices=[0, 1, 2], default=2)
     ap.add_argument("--ckpt", 
-    #  default = None,
-    default= f"/home/omertaub/projects/ENGRF/outputs/engrf_swinir_hourglass/ckpts_stage0/best_stage0_ep010.pt"
+     default = None,
+    # default= f"/home/omertaub/projects/ENGRF/outputs/engrf_swinir_hourglass/ckpts_stage0/best_stage0_ep010.pt"
     # default=f"/home/omertaub/projects/ENGRF/outputs/engrf_swinir_hourglass/ckpts_stage1/best_stage1_ep034.pt"
     # default= f"/home/omertaub/projects/ENGRF/outputs/engrf_abs/ckpts_stage1/best_stage1_ep020.pt"
     )
@@ -144,6 +145,16 @@ def main():
         file_handler.setLevel(root_logger.level)
         file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S"))
         root_logger.addHandler(file_handler)
+
+    # Initialize Weights & Biases
+    run = wandb.init(
+        project="engrf",
+        name=cfg.get("experiment", {}).get("name"),
+        config=cfg,
+        dir=out_dir,
+    )
+    wandb.define_metric("epoch")
+    wandb.define_metric("iter")
 
     if args.stage == 0:
         model = train_stage0_pm(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)

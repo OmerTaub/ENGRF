@@ -11,6 +11,11 @@ from tqdm import tqdm
 import random
 
 from models.engrf import ENGRFAbs
+try:
+    import wandb
+    WANDB = True
+except Exception:
+    WANDB = False
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +311,12 @@ def train_stage0_pm(
 
             if (it % log_interval) == 0:
                 logger.info(f"[Stage0][Ep {ep}] it={it} pm_loss={(run_loss/max(run_cnt,1)):.6f}")
+                if WANDB:
+                    wandb.log({
+                        "train/pm_loss": (run_loss/max(run_cnt,1)),
+                        "epoch": ep,
+                        "iter": it,
+                    })
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
         # ----------------------------- validate ---------------------------- #
@@ -353,6 +364,14 @@ def train_stage0_pm(
             logger.info(f"  PSNR: {psnr_avg:.3f} dB")
             logger.info(f"  SSIM: {ssim_avg:.4f}")
             logger.info(f"  NMSE: {nmse_avg:.6f}")
+            if WANDB:
+                wandb.log({
+                    "val/pm_loss": val_avg,
+                    "val/PSNR": psnr_avg,
+                    "val/SSIM": ssim_avg,
+                    "val/NMSE": nmse_avg,
+                    "epoch": ep,
+                })
             
 
             # Save best
@@ -402,5 +421,9 @@ def _sample_and_viz(dataset, batch_size, device, model, vis_n, out_dir, ep, spli
                     y[i].cpu(), x_star[i].cpu(), x[i].cpu(), mask[i].cpu(),
                     os.path.join(out_dir, f"{split}_ep{ep:03d}_idx{saved:02d}.png")
                 )
+                if WANDB:
+                    wandb.log({
+                        f"viz/stage0_{split}": wandb.Image(os.path.join(out_dir, f"{split}_ep{ep:03d}_idx{saved:02d}.png"))
+                    }, commit=False)
                 saved += 1
             if saved >= vis_n: break

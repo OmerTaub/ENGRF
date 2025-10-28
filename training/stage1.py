@@ -10,6 +10,11 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from models.engrf import ENGRFAbs
+try:
+    import wandb
+    WANDB = True
+except Exception:
+    WANDB = False
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +382,12 @@ def train_stage1(
             if (it % log_interval) == 0:
                 avg = run_loss / max(run_cnt, 1)
                 logger.info(f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f}")
+                if WANDB:
+                    wandb.log({
+                        "train/fm_loss": avg,
+                        "epoch": ep,
+                        "iter": it,
+                    })
 
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
@@ -423,6 +434,14 @@ def train_stage1(
             logger.info(f"  PSNR: {psnr_avg:.3f} dB")
             logger.info(f"  SSIM: {ssim_avg:.4f}")
             logger.info(f"  NMSE: {nmse_avg:.6f}")
+            if WANDB:
+                wandb.log({
+                    "val/fm_loss": val_avg,
+                    "val/PSNR": psnr_avg,
+                    "val/SSIM": ssim_avg,
+                    "val/NMSE": nmse_avg,
+                    "epoch": ep,
+                })
 
             # Save best (so your loader in train.py can warm-start Stage-2)
             if val_avg < best_val:
@@ -539,6 +558,10 @@ def _viz_random_quads(
                 labels=("Undersampled", "Posterior Mean", "Rectified Flow", "GT"),
                 add_titles=True,
             )
+            if WANDB:
+                wandb.log({
+                    f"viz/stage1_{split_label}": wandb.Image(out_path)
+                }, commit=False)
             saved += 1
         if saved >= vis_n:
             break
