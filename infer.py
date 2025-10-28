@@ -1,6 +1,6 @@
 # inference.py
 from __future__ import annotations
-import os, csv, argparse, yaml, math, time
+import os, csv, argparse, yaml, math, time, logging
 from typing import Dict, Tuple, Optional
 
 import torch
@@ -13,6 +13,16 @@ from models.engrf import ENGRFAbs
 from data.dataset import FastMRIMaskedAbsDataset
 import tqdm
 
+logger = logging.getLogger(__name__)
+
+def setup_logging(verbosity: int = 1) -> None:
+    level = logging.INFO if verbosity <= 1 else logging.DEBUG
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
 
 # ----------------------------- I/O helpers ----------------------------- #
 
@@ -174,8 +184,7 @@ def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str) -> ENGRFAbs
     state = ckpt.get("state_dict", ckpt)  # tolerate raw state_dict
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
-        print(f"[load_pretrained] non-strict load "
-              f"(missing={len(missing)}, unexpected={len(unexpected)})")
+        logger.info(f"[load_pretrained] non-strict load (missing={len(missing)}, unexpected={len(unexpected)})")
     model.to(device)
     model.eval()
     return model
@@ -224,14 +233,14 @@ def run_inference(
     # Get resize configuration - support both img_size and resize_to (same as training)
     if override_resize is not None:
         resize_to = tuple(override_resize)
-        print(f"[Inference] Using override resize: {resize_to}")
+        logger.info(f"[Inference] Using override resize: {resize_to}")
     else:
         resize_to = cfg["data"].get("resize_to", None) or cfg["data"].get("img_size", None)
         if resize_to is not None:
             resize_to = tuple(resize_to)
-            print(f"[Inference] Using config resize: {resize_to}")
+            logger.info(f"[Inference] Using config resize: {resize_to}")
         else:
-            print("[Inference] Using original image sizes (no resizing)")
+            logger.info("[Inference] Using original image sizes (no resizing)")
     resize_mode = cfg["data"].get("resize_mode", "bilinear")
     
     val_ds = FastMRIMaskedAbsDataset(
@@ -257,7 +266,7 @@ def run_inference(
     # Set inference mode (stages 0+1 only vs full 0+1+2)
     model.pmrf_only = use_pmrf_only
     mode_str = "Stages 0+1 (PM+RF)" if use_pmrf_only else "Stages 0+1+2 (Full ENGRF)"
-    print(f"\n=== Running inference with: {mode_str} ===\n")
+    logger.info(f"=== Running inference with: {mode_str} ===")
 
     # Metrics accumulators
     all_psnr = []
@@ -335,7 +344,7 @@ def run_inference(
     mae_avg  = torch.cat(all_mae).mean().item() if all_mae else float("nan")
     elapsed  = time.time() - t0
 
-    # Print summary and also write a small text file
+    # Log summary and also write a small text file
     summary = {
         "PSNR": psnr_avg,
         "SSIM": ssim_avg,
@@ -344,9 +353,9 @@ def run_inference(
         "images": idx_base,
         "seconds": elapsed,
     }
-    print("\n=== ENGRF Inference (Validation) ===")
+    logger.info("ENGRF Inference (Validation)")
     for k, v in summary.items():
-        print(f"{k:>8}: {v:.6f}" if isinstance(v, float) else f"{k:>8}: {v}")
+        logger.info(f"{k:>8}: {v:.6f}" if isinstance(v, float) else f"{k:>8}: {v}")
 
     with open(os.path.join(out_dir, "summary.txt"), "w") as f:
         for k, v in summary.items():
@@ -358,6 +367,7 @@ def run_inference(
 # ----------------------------- CLI ----------------------------- #
 
 def main():
+    setup_logging(verbosity=1)
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", help="Path to YAML config (same format as training).",default =f"/home/omertaub/projects/ENGRF/configs/config.yaml")
     ap.add_argument("--ckpt", help="Path to a trained checkpoint (Stage-2 recommended).", default= f"/home/omertaub/projects/ENGRF/outputs_1/engrf_abs/ckpts_stage2/best_stage2_ep006.pt")
@@ -379,9 +389,7 @@ def main():
 
     if args.stages == "both":
         # Run both modes and save comparison
-        print("\n" + "="*80)
-        print("COMPARISON MODE: Running inference with both stage configurations")
-        print("="*80 + "\n")
+        logger.info("COMPARISON MODE: Running inference with both stage configurations")
         
         # Run with stages 0+1 only
         save_dir_01 = os.path.join(args.save_dir, "stages_0+1")
@@ -418,11 +426,8 @@ def main():
         )
         
         # Print comparison
-        print("\n" + "="*80)
-        print("COMPARISON RESULTS")
-        print("="*80)
-        print(f"\n{'Metric':<15} {'Stages 0+1 (PM+RF)':<25} {'Stages 0+1+2 (ENGRF)':<25} {'Improvement':<15}")
-        print("-"*80)
+        logger.info("COMPARISON RESULTS")
+        logger.info(f"{'Metric':<15} {'Stages 0+1 (PM+RF)':<25} {'Stages 0+1+2 (ENGRF)':<25} {'Improvement':<15}")
         
         for metric in ["PSNR", "SSIM", "MSE", "MAE"]:
             val_01 = results_01[metric]
@@ -440,13 +445,11 @@ def main():
                 perc = (improvement / val_01 * 100) if val_01 != 0 else 0
                 imp_str = f"{sign}{improvement:.6f} ({sign}{perc:.2f}%)"
             
-            print(f"{metric:<15} {val_01:<25.6f} {val_012:<25.6f} {imp_str:<15}")
+            logger.info(f"{metric:<15} {val_01:<25.6f} {val_012:<25.6f} {imp_str:<15}")
         
-        print("-"*80)
-        print(f"\nResults saved to:")
-        print(f"  Stages 0+1:   {save_dir_01}")
-        print(f"  Stages 0+1+2: {save_dir_012}")
-        print("="*80 + "\n")
+        logger.info("Results saved to:")
+        logger.info(f"  Stages 0+1:   {save_dir_01}")
+        logger.info(f"  Stages 0+1+2: {save_dir_012}")
         
         # Save comparison to file
         comparison_path = os.path.join(args.save_dir, "comparison.txt")
@@ -478,7 +481,7 @@ def main():
             f.write(f"\nCheckpoint: {args.ckpt}\n")
             f.write(f"Sampling steps: {args.steps}\n")
         
-        print(f"Comparison summary saved to: {comparison_path}")
+        logger.info(f"Comparison summary saved to: {comparison_path}")
         
     else:
         # Run single mode

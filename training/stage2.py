@@ -1,6 +1,6 @@
 # training/stage2.py
 from __future__ import annotations
-import os, math
+import os, math, logging
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -9,6 +9,8 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from models.engrf import ENGRFAbs
+
+logger = logging.getLogger(__name__)
 
 # --------------------------- small helpers --------------------------- #
 
@@ -171,7 +173,7 @@ def train_stage2(
 
     n_gauge = _count_params(model.W, True) + _count_params(model.hflow, True)
     n_rf_ft = _count_params(model.rf, True)
-    print(f"[Stage2] Trainable params — gauge: {n_gauge:,} | rf(ft={ft_rf}): {n_rf_ft:,}")
+    logger.info(f"[Stage2] Trainable params — gauge: {n_gauge:,} | rf(ft={ft_rf}): {n_rf_ft:,}")
 
     opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=wd)
     scaler = GradScaler(enabled=amp)
@@ -181,7 +183,7 @@ def train_stage2(
         try:
             model.check_h_identity(device=device)  # assert ||h(y,0)-y|| and ||h(y,1)-y|| < eps
         except Exception as e:
-            print(f"[Stage2] Warning: check_h_identity failed: {e}")
+            logger.warning(f"[Stage2] Warning: check_h_identity failed: {e}")
 
     best_val = math.inf
 
@@ -229,8 +231,8 @@ def train_stage2(
             avg_ssim = torch.cat(all_train_ssim).mean().item() if all_train_ssim else 0
 
             if (it % log_interval) == 0:
-                print(f"[Stage2][Ep {ep}] it={it} gfm={logs.get('gfm_loss', float('nan')):.6f} "
-                      f"resid={logs.get('conj_resid', float('nan')):.6f}")
+                logger.info(f"[Stage2][Ep {ep}] it={it} gfm={logs.get('gfm_loss', float('nan')):.6f} "
+                            f"resid={logs.get('conj_resid', float('nan')):.6f}")
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
         # --------------------------- Validation --------------------------- #
@@ -271,18 +273,18 @@ def train_stage2(
             psnr_avg = torch.cat(all_psnr).mean().item() if all_psnr else float("nan")
             ssim_avg = torch.cat(all_ssim).mean().item() if all_ssim else float("nan")
             nmse_avg = torch.cat(all_nmse).mean().item() if all_nmse else float("nan")
-            print(f"\n[Stage2-Gauge][Val] Epoch {ep} Summary:")
-            print(f"  Loss: {val_avg:.6f}")
-            print(f"  PSNR: {psnr_avg:.3f} dB")
-            print(f"  SSIM: {ssim_avg:.4f}")
-            print(f"  NMSE: {nmse_avg:.6f}")
+            logger.info(f"[Stage2-Gauge][Val] Epoch {ep} Summary:")
+            logger.info(f"  Loss: {val_avg:.6f}")
+            logger.info(f"  PSNR: {psnr_avg:.3f} dB")
+            logger.info(f"  SSIM: {ssim_avg:.4f}")
+            logger.info(f"  NMSE: {nmse_avg:.6f}")
 
             # Save best
             if val_avg < best_val:
                 best_val = val_avg
                 path = os.path.join(ckpt_dir, f"best_stage2_ep{ep:03d}.pt")
                 torch.save({"state_dict": model.state_dict(), "config": cfg, "val_gfm_loss": best_val}, path)
-                print(f"[Stage2] Saved best checkpoint to: {path}")
+                logger.info(f"[Stage2] Saved best checkpoint to: {path}")
 
             # ------------------------- Visualization ------------------------- #
             if (ep % vis_every == 0) and vis_n > 0:
@@ -332,7 +334,7 @@ def train_stage2(
         if ep == epochs:
             path = os.path.join(ckpt_dir, f"last_stage2_ep{ep:03d}.pt")
             torch.save({"state_dict": model.state_dict(), "config": cfg}, path)
-            print(f"[Stage2] Saved last checkpoint to: {path}")
+            logger.info(f"[Stage2] Saved last checkpoint to: {path}")
 
     return model
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, os, yaml, torch
+import argparse, os, yaml, torch, logging
 from torch.utils.data import DataLoader
 
 from training.stage0_pm import train_stage0_pm
@@ -8,6 +8,17 @@ from training.stage2 import train_stage2
 from data.dataset import FastMRIMaskedAbsDataset
 from data.LFHF_dataset import LFHFAbsPairDataset  
 from models.engrf import ENGRFAbs
+
+logger = logging.getLogger(__name__)
+
+def setup_logging(verbosity: int = 1) -> None:
+    level = logging.INFO if verbosity <= 1 else logging.DEBUG
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
 
 
 def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str):
@@ -19,16 +30,16 @@ def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str):
     state = ckpt.get("state_dict", ckpt)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
-        print(f"[load_pretrained] Loaded with non-strict state_dict "
-              f"(missing={len(missing)}, unexpected={len(unexpected)})")
+        logger.info(f"[load_pretrained] Loaded with non-strict state_dict (missing={len(missing)}, unexpected={len(unexpected)})")
     else:
-        print("Success loaded model")
+        logger.info("Success loaded model")
     return model
 
 
 def make_datasets(cfg):
     kind = cfg["data"].get("kind", "fastmri_mask")
     if kind == "fastmri_mask":
+        logger.info("FASTMRI_MASK_DATASET")
         # K-space padding/cropping (preferred) - use img_size or pad_to
         pad_to = cfg["data"].get("pad_to", None) or cfg["data"].get("img_size", None)
         if pad_to is not None:
@@ -61,7 +72,7 @@ def make_datasets(cfg):
             resize_mode=resize_mode,
         )
     elif kind == "lfhf_pair":
-        print("LFHF_DATASET")
+        logger.info("LFHF_DATASET")
         train_ds = LFHFAbsPairDataset(
             lf_root=cfg["data"]["train_lf_root"],
             hf_root=cfg["data"]["train_hf_root"],
@@ -82,6 +93,7 @@ def make_datasets(cfg):
 
 
 def main():
+    setup_logging(verbosity=1)
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/config_swinir_hourglass.yaml")
     ap.add_argument("--device", default="cuda")
@@ -123,6 +135,16 @@ def main():
     out_dir = cfg.get("experiment", {}).get("out_dir", "runs")
     os.makedirs(out_dir, exist_ok=True)
 
+    # Add file handler to write logs to out_dir/log.txt
+    log_path = os.path.join(out_dir, "log.txt")
+    root_logger = logging.getLogger()
+    # Avoid duplicating file handlers if main() is called multiple times
+    if not any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(log_path) for h in root_logger.handlers):
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setLevel(root_logger.level)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S"))
+        root_logger.addHandler(file_handler)
+
     if args.stage == 0:
         model = train_stage0_pm(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)
         torch.save({"state_dict": model.state_dict(), "config": cfg},
@@ -130,14 +152,14 @@ def main():
 
     elif args.stage == 1:
         if pretrained is None:
-            print("[Stage-1] Warning: no checkpoint provided.")
+            logger.warning("[Stage-1] Warning: no checkpoint provided.")
         model = train_stage1(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)
         torch.save({"state_dict": model.state_dict(), "config": cfg},
                    os.path.join(out_dir, "stage1.pt"))
 
     else:
         if pretrained is None:
-            print("[Stage-2] Warning: no checkpoint provided.")
+            logger.warning("[Stage-2] Warning: no checkpoint provided.")
         model = train_stage2(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)
         torch.save({"state_dict": model.state_dict(), "config": cfg},
                    os.path.join(out_dir, "stage2.pt"))

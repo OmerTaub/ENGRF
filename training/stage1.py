@@ -1,6 +1,6 @@
 # training/stage1.py
 from __future__ import annotations
-import os, math
+import os, math, logging
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -10,6 +10,8 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from models.engrf import ENGRFAbs
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------- Utils -------------------------------- #
@@ -320,7 +322,7 @@ def train_stage1(
     for p in model.rf.parameters():      p.requires_grad = True
 
     n_trainable = _count_params(model.rf, trainable_only=True)
-    print(f"[Stage1] Trainable RF params: {n_trainable:,}")
+    logger.info(f"[Stage1] Trainable RF params: {n_trainable:,}")
 
     opt = torch.optim.AdamW(model.rf.parameters(), lr=lr, weight_decay=wd)
     scaler = GradScaler(enabled=amp)
@@ -374,7 +376,7 @@ def train_stage1(
 
             if (it % log_interval) == 0:
                 avg = run_loss / max(run_cnt, 1)
-                print(f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f}")
+                logger.info(f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f}")
 
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
@@ -416,11 +418,11 @@ def train_stage1(
             psnr_avg = torch.cat(all_psnr).mean().item() if all_psnr else float("nan")
             ssim_avg = torch.cat(all_ssim).mean().item() if all_ssim else float("nan")
             nmse_avg = torch.cat(all_nmse).mean().item() if all_nmse else float("nan")
-            print(f"\n[Stage1-RF][Val] Epoch {ep} Summary:")
-            print(f"  Loss: {val_avg:.6f}")
-            print(f"  PSNR: {psnr_avg:.3f} dB")
-            print(f"  SSIM: {ssim_avg:.4f}")
-            print(f"  NMSE: {nmse_avg:.6f}")
+            logger.info(f"[Stage1-RF][Val] Epoch {ep} Summary:")
+            logger.info(f"  Loss: {val_avg:.6f}")
+            logger.info(f"  PSNR: {psnr_avg:.3f} dB")
+            logger.info(f"  SSIM: {ssim_avg:.4f}")
+            logger.info(f"  NMSE: {nmse_avg:.6f}")
 
             # Save best (so your loader in train.py can warm-start Stage-2)
             if val_avg < best_val:
@@ -431,7 +433,7 @@ def train_stage1(
                     "config": cfg,
                     "val_fm_loss": best_val,
                 }, path)
-                print(f"[Stage1] Saved best checkpoint to: {path}")
+                logger.info(f"[Stage1] Saved best checkpoint to: {path}")
 
             # ---------------------- Visualization ---------------------- #
             if (ep % vis_every == 0) and vis_n > 0:
@@ -465,7 +467,7 @@ def train_stage1(
                 "state_dict": model.state_dict(),
                 "config": cfg,
             }, path)
-            print(f"[Stage1] Saved last checkpoint to: {path}")
+            logger.info(f"[Stage1] Saved last checkpoint to: {path}")
 
     return model
 

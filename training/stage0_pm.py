@@ -1,6 +1,6 @@
 # training/stage0_pm.py
 from __future__ import annotations
-import os, math
+import os, math, logging
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -11,6 +11,8 @@ from tqdm import tqdm
 import random
 
 from models.engrf import ENGRFAbs
+
+logger = logging.getLogger(__name__)
 
 # --------------------------- small helpers --------------------------- #
 
@@ -250,7 +252,7 @@ def train_stage0_pm(
     for p in model.hflow.parameters():   p.requires_grad = False
 
     n_trainable = _count_params(model.pm, trainable_only=True)
-    print(f"[Stage0] Trainable PM params: {n_trainable:,}")
+    logger.info(f"[Stage0] Trainable PM params: {n_trainable:,}")
 
     opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=wd)
     scaler = GradScaler(enabled=amp)
@@ -303,7 +305,7 @@ def train_stage0_pm(
             avg_ssim = torch.cat(all_train_ssim).mean().item() if all_train_ssim else 0
 
             if (it % log_interval) == 0:
-                print(f"[Stage0][Ep {ep}] it={it} pm_loss={(run_loss/max(run_cnt,1)):.6f}")
+                logger.info(f"[Stage0][Ep {ep}] it={it} pm_loss={(run_loss/max(run_cnt,1)):.6f}")
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
         # ----------------------------- validate ---------------------------- #
@@ -346,11 +348,11 @@ def train_stage0_pm(
             psnr_avg = torch.cat(all_psnr).mean().item() if all_psnr else float("nan")
             ssim_avg = torch.cat(all_ssim).mean().item() if all_ssim else float("nan")
             nmse_avg = torch.cat(all_nmse).mean().item() if all_nmse else float("nan")
-            print(f"\n[Stage0-PM][Val] Epoch {ep} Summary:")
-            print(f"  Loss: {val_avg:.6f}")
-            print(f"  PSNR: {psnr_avg:.3f} dB")
-            print(f"  SSIM: {ssim_avg:.4f}")
-            print(f"  NMSE: {nmse_avg:.6f}")
+            logger.info(f"[Stage0-PM][Val] Epoch {ep} Summary:")
+            logger.info(f"  Loss: {val_avg:.6f}")
+            logger.info(f"  PSNR: {psnr_avg:.3f} dB")
+            logger.info(f"  SSIM: {ssim_avg:.4f}")
+            logger.info(f"  NMSE: {nmse_avg:.6f}")
             
 
             # Save best
@@ -358,7 +360,7 @@ def train_stage0_pm(
                 best_val = val_avg
                 path = os.path.join(ckpt_dir, f"best_stage0_ep{ep:03d}.pt")
                 torch.save({"state_dict": model.state_dict(), "config": cfg, "val_pm_loss": best_val}, path)
-                print(f"[Stage0] Saved best checkpoint to: {path}")
+                logger.info(f"[Stage0] Saved best checkpoint to: {path}")
 
             # Visualization panel(s)
             if (ep % vis_every == 0) and vis_n > 0:
@@ -371,7 +373,7 @@ def train_stage0_pm(
         if ep == epochs:
             path = os.path.join(ckpt_dir, f"last_stage0_ep{ep:03d}.pt")
             torch.save({"state_dict": model.state_dict(), "config": cfg}, path)
-            print(f"[Stage0] Saved last checkpoint to: {path}")
+            logger.info(f"[Stage0] Saved last checkpoint to: {path}")
 
     return model
 
