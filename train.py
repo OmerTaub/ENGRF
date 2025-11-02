@@ -12,6 +12,16 @@ from models.engrf import ENGRFAbs
 
 logger = logging.getLogger(__name__)
 
+def get_outdir(cfg):
+    out_dir = cfg.get("experiment", {}).get("out_dir", "runs")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    runs = [int(run.split("_")[-1]) for run in os.listdir(out_dir) if run.startswith("run_")]
+    next_run = 0 if len(runs) == 0 else max(runs) + 1
+    
+    return os.path.join(out_dir, f"run_{next_run}")
+
+
 def setup_logging(verbosity: int = 1) -> None:
     level = logging.INFO if verbosity <= 1 else logging.DEBUG
     logging.basicConfig(
@@ -54,8 +64,9 @@ def make_datasets(cfg):
         
         train_ds = FastMRIMaskedAbsDataset(
             cfg["data"]["train_root"],
-            center_fractions=tuple(cfg["data"].get("center_fractions_tr", (0.04, 0.04))),
-            accelerations=tuple(cfg["data"].get("accelerations_tr", (4, 8))),
+            center_fractions = tuple(cfg["data"]["center_fractions_tr"]),
+            accelerations = tuple(cfg["data"]["accelerations_tr"]),
+
             seed=int(cfg["data"].get("seed_tr", 42)),
             pad_to=pad_to,
             deterministic=False,
@@ -64,8 +75,8 @@ def make_datasets(cfg):
         )
         val_ds = FastMRIMaskedAbsDataset(
             cfg["data"]["val_root"],
-            center_fractions=tuple(cfg["data"].get("center_fractions_va", (0.04,0.04))),
-            accelerations=tuple(cfg["data"].get("accelerations_va", (4, 4))),
+            center_fractions = tuple(cfg["data"]["center_fractions_va"]),
+            accelerations = tuple(cfg["data"]["accelerations_va"]),
             seed=int(cfg["data"].get("seed_va", 123)),
             pad_to=pad_to,
             deterministic=True,  # Stable masks for validation
@@ -133,7 +144,7 @@ def main():
     # Optional warm start
     pretrained = load_pretrained(args.ckpt, cfg, args.device)
 
-    out_dir = cfg.get("experiment", {}).get("out_dir", "runs")
+    out_dir = get_outdir(cfg)
     os.makedirs(out_dir, exist_ok=True)
 
     # Add file handler to write logs to out_dir/log.txt
@@ -149,7 +160,7 @@ def main():
     # Initialize Weights & Biases
     run = wandb.init(
         project="engrf",
-        name=cfg.get("experiment", {}).get("name"),
+        name=out_dir,
         config=cfg,
         dir=out_dir,
     )

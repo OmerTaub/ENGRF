@@ -316,6 +316,7 @@ def train_stage0_pm(
                         "train/pm_loss": (run_loss/max(run_cnt,1)),
                         "epoch": ep,
                         "iter": it,
+                        "step": it + (ep - 1) * len(train_loader),
                     })
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
