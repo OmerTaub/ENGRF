@@ -1,6 +1,6 @@
 # training/stage1.py
 from __future__ import annotations
-import os, math, logging
+import os, math, logging, argparse
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-
+from util.checkpoint import load_latest_checkpoint, save_ckpt
 from models.engrf import ENGRFAbs
 try:
     import wandb
@@ -281,6 +281,7 @@ def train_stage1(
     val_loader: Optional[DataLoader] = None,
     device: str = "cuda",
     pretrained: Optional[ENGRFAbs] = None,
+    args: argparse.Namespace = None,
 ) -> ENGRFAbs:
     """
     Stage-1 trainer: learns the unconditional Rectified Flow v_theta via flow matching,
@@ -293,7 +294,7 @@ def train_stage1(
     trn = cfg.get("train", {})
     exp = cfg.get("experiment", {})
 
-    out_dir       = trn.get("out_dir", exp.get("out_dir", "./outputs"))
+    out_dir = trn["save_dir"]
     ckpt_dir      = os.path.join(out_dir, "ckpts_stage1")
     viz_dir       = os.path.join(out_dir, "viz_stage1")
     os.makedirs(out_dir, exist_ok=True)
@@ -332,10 +333,22 @@ def train_stage1(
     opt = torch.optim.AdamW(model.rf.parameters(), lr=lr, weight_decay=wd)
     scaler = GradScaler(enabled=amp)
 
+    # Resume from latest checkpoint
+    if args.resume or args.resume_dir is not None:
+        ckpt_resume_dir = os.path.join(args.resume_dir, "ckpts_stage1") if args.resume_dir is not None else ckpt_dir
+        logger.info(f"[Stage1] Trying to resuming from directory: {ckpt_resume_dir}")
+        latest_ckpt, model, opt, global_step, start_epoch = load_latest_checkpoint(ckpt_resume_dir, model, opt, device)
+        if global_step == 0 and start_epoch > 1:
+            global_step = (start_epoch - 1) * len(train_loader)
+        logger.info(f"[Stage1] Resuming from {latest_ckpt} at epoch {start_epoch} (global_step={global_step})")
+    else:
+        global_step = 0
+        start_epoch = 1
+
     best_val = math.inf
 
     # ------------------------- Epoch Loop -------------------------- #
-    for ep in range(1, epochs + 1):
+    for ep in range(start_epoch, epochs + 1):
         model.train()
         pbar = tqdm(train_loader, desc=f"[Stage1-RF] Epoch {ep}/{epochs}", leave=False)
         run_loss, run_cnt = 0.0, 0
@@ -374,6 +387,7 @@ def train_stage1(
             bs = batch["x"].size(0)
             run_loss += float(loss.detach().cpu()) * bs
             run_cnt  += bs
+            global_step += 1
 
             # Compute running averages
             avg_psnr = torch.cat(all_train_psnr).mean().item() if all_train_psnr else 0
@@ -387,6 +401,7 @@ def train_stage1(
                         "train/fm_loss": avg,
                         "epoch": ep,
                         "iter": it,
+                        "step": global_step,
                     })
 
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
@@ -447,11 +462,15 @@ def train_stage1(
             if val_avg < best_val:
                 best_val = val_avg
                 path = os.path.join(ckpt_dir, f"best_stage1_ep{ep:03d}.pt")
-                torch.save({
-                    "state_dict": model.state_dict(),
-                    "config": cfg,
-                    "val_fm_loss": best_val,
-                }, path)
+                save_ckpt(
+                    path,
+                    model.state_dict(),
+                    opt.state_dict(),
+                    global_step=global_step,
+                    epoch=ep,
+                    config=cfg,
+                    val_fm_loss=best_val
+                )
                 logger.info(f"[Stage1] Saved best checkpoint to: {path}")
 
             # ---------------------- Visualization ---------------------- #
@@ -482,10 +501,14 @@ def train_stage1(
         # ------------------------- Periodic Save ----------------------- #
         if ep == epochs:
             path = os.path.join(ckpt_dir, f"last_stage1_ep{ep:03d}.pt")
-            torch.save({
-                "state_dict": model.state_dict(),
-                "config": cfg,
-            }, path)
+            save_ckpt(
+                path,
+                model.state_dict(),
+                opt.state_dict(),
+                global_step=global_step,
+                epoch=ep,
+                config=cfg,
+            )
             logger.info(f"[Stage1] Saved last checkpoint to: {path}")
 
     return model

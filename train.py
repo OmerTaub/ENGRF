@@ -9,17 +9,8 @@ from training.stage2 import train_stage2
 from data.dataset import FastMRIMaskedAbsDataset
 from data.LFHF_dataset import LFHFAbsPairDataset  
 from models.engrf import ENGRFAbs
-
+from util.checkpoint import get_outdir
 logger = logging.getLogger(__name__)
-
-def get_outdir(cfg):
-    out_dir = cfg.get("experiment", {}).get("out_dir", "runs")
-    os.makedirs(out_dir, exist_ok=True)
-    
-    runs = [int(run.split("_")[-1]) for run in os.listdir(out_dir) if run.startswith("run_")]
-    next_run = 0 if len(runs) == 0 else max(runs) + 1
-    
-    return os.path.join(out_dir, f"run_{next_run}")
 
 
 def setup_logging(verbosity: int = 1) -> None:
@@ -34,6 +25,7 @@ def setup_logging(verbosity: int = 1) -> None:
 
 def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str):
     if not ckpt_path or not os.path.exists(ckpt_path):
+        logger.warning(f"[load_pretrained] Checkpoint not found: {ckpt_path}")
         return None
     ckpt = torch.load(ckpt_path, map_location=device)
     ckpt_cfg = ckpt.get("config", ckpt.get("cfg", fallback_cfg))
@@ -43,7 +35,7 @@ def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str):
     if missing or unexpected:
         logger.info(f"[load_pretrained] Loaded with non-strict state_dict (missing={len(missing)}, unexpected={len(unexpected)})")
     else:
-        logger.info("Success loaded model")
+        logger.info(f"[load_pretrained] Success loaded model from {ckpt_path}")
     return model
 
 
@@ -116,6 +108,8 @@ def main():
     # default=f"/home/omertaub/projects/ENGRF/outputs/engrf_swinir_hourglass/ckpts_stage1/best_stage1_ep034.pt"
     # default= f"/home/omertaub/projects/ENGRF/outputs/engrf_abs/ckpts_stage1/best_stage1_ep020.pt"
     )
+    ap.add_argument("--resume", action="store_true", help="Automatically load latest checkpoint in latest run directory. This uses the latest run with highest X for run_X as the output directory.")
+    ap.add_argument("--resume_dir", type=str, default=None, help="Specify which run directory to load latest checkpoint from. This uses the specified run directory as the output directory.")
     args = ap.parse_args()
 
     with open(args.config, "r") as f:
@@ -141,14 +135,17 @@ def main():
         persistent_workers=bool(cfg["train"].get("persistent_workers", True)),
     )
 
-    # Optional warm start
-    pretrained = load_pretrained(args.ckpt, cfg, args.device)
-
-    out_dir = get_outdir(cfg)
+    if args.resume_dir is not None:
+        out_dir = args.resume_dir
+    else:
+        out_dir = get_outdir(cfg, resume=args.resume)
     os.makedirs(out_dir, exist_ok=True)
 
+    cfg["train"]["save_dir"] = out_dir
+    save_dir = cfg["train"]["save_dir"]
+
     # Add file handler to write logs to out_dir/log.txt
-    log_path = os.path.join(out_dir, "log.txt")
+    log_path = os.path.join(save_dir, "log.txt")
     root_logger = logging.getLogger()
     # Avoid duplicating file handlers if main() is called multiple times
     if not any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(log_path) for h in root_logger.handlers):
@@ -162,29 +159,30 @@ def main():
         project="engrf",
         name=out_dir,
         config=cfg,
-        dir=out_dir,
+        dir=save_dir,
     )
     wandb.define_metric("epoch")
     wandb.define_metric("iter")
+    logger.info(f"[wandb] Initialized with project={run.project}, name={out_dir}, dir={save_dir}")
+
+    # Optional warm start
+    pretrained = load_pretrained(args.ckpt, cfg, args.device)
 
     if args.stage == 0:
-        model = train_stage0_pm(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)
-        torch.save({"state_dict": model.state_dict(), "config": cfg},
-                   os.path.join(out_dir, "stage0_pm.pt"))
+        model = train_stage0_pm(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained, args=args)
+        save_ckpt(os.path.join(out_dir, "stage0_pm.pt"), model.state_dict())
 
     elif args.stage == 1:
         if pretrained is None:
             logger.warning("[Stage-1] Warning: no checkpoint provided.")
-        model = train_stage1(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)
-        torch.save({"state_dict": model.state_dict(), "config": cfg},
-                   os.path.join(out_dir, "stage1.pt"))
+        model = train_stage1(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained, args=args)
+        save_ckpt(os.path.join(out_dir, "stage1.pt"), model.state_dict())
 
     else:
         if pretrained is None:
             logger.warning("[Stage-2] Warning: no checkpoint provided.")
-        model = train_stage2(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained)
-        torch.save({"state_dict": model.state_dict(), "config": cfg},
-                   os.path.join(out_dir, "stage2.pt"))
+        model = train_stage2(cfg, dl_tr, dl_va, device=args.device, pretrained=pretrained, args=args)
+        save_ckpt(os.path.join(out_dir, "stage2.pt"), model.state_dict())
 
 
 if __name__ == "__main__":
