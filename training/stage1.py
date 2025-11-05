@@ -179,6 +179,12 @@ def save_quad_panel(
     # Create image row and k-space row
     img_row = np.concatenate([lf_u8, pm_u8, rf_u8, gt_u8], axis=1)
     kspace_row = np.concatenate([lf_k, pm_k, rf_k, gt_k], axis=1)
+
+    # Ensure both rows are 3D before vertical stacking
+    if img_row.ndim == 2:
+        img_row = np.stack([img_row] * 3, axis=-1)
+    if kspace_row.ndim == 2:
+        kspace_row = np.stack([kspace_row] * 3, axis=-1)
     
     # Stack rows vertically
     combined = np.concatenate([img_row, kspace_row], axis=0)
