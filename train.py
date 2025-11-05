@@ -95,6 +95,11 @@ def make_datasets(cfg):
         raise ValueError(f"Unknown dataset kind: {kind}")
     return train_ds, val_ds # overfitting check val_ds no include
 
+def to_wandb_id(out_dir: str) -> str:
+    # take out_dir remove "/"
+    return out_dir.replace("/", "")
+
+
 
 def main():
     setup_logging(verbosity=1)
@@ -110,6 +115,7 @@ def main():
     )
     ap.add_argument("--resume", action="store_true", help="Automatically load latest checkpoint in latest run directory. This uses the latest run with highest X for run_X as the output directory.")
     ap.add_argument("--resume_dir", type=str, default=None, help="Specify which run directory to load latest checkpoint from. This uses the specified run directory as the output directory.")
+    ap.add_argument("--wandb_id", type=str, default=None, help="Specify which wandb id to use.")
     args = ap.parse_args()
 
     with open(args.config, "r") as f:
@@ -155,11 +161,14 @@ def main():
         root_logger.addHandler(file_handler)
 
     # Initialize Weights & Biases
+    wandb_id = to_wandb_id(out_dir) if args.wandb_id is None else args.wandb_id
     run = wandb.init(
         project="engrf",
         name=out_dir,
+        id=wandb_id,
         config=cfg,
         dir=save_dir,
+        resume="must" if args.resume_dir is not None else "allow",
     )
     wandb.define_metric("epoch")
     wandb.define_metric("iter")
