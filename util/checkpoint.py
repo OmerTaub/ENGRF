@@ -1,4 +1,7 @@
 import os, torch
+import logging
+
+logger = logging.getLogger(__name__)
 
 def save_ckpt(path: str,
               model_state_dict: dict, 
@@ -79,16 +82,20 @@ def load_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Op
         return None, model, optimizer, 0, 1
 
     ckpt = torch.load(path, map_location=map_location)
-    state = ckpt.get("state_dict", None)
+    state = ckpt.get("model_state_dict", None)
     if state is None:
         raise ValueError(f"Checkpoint {path} does not contain a state_dict")
-    
-    opt_state = ckpt.get("opt_state_dict", None)
+    model.load_state_dict(state)
+
+    opt_state = ckpt.get("optimizer_state_dict", None)
     if opt_state is not None:
         try:
-            optimizer.load_state_dict(opt_state, map_location=map_location)
+            optimizer.load_state_dict(opt_state)
+            logger.info(f"[load_checkpoint] Loaded optimizer state")
         except Exception as e:
             logger.warning(f"[load_checkpoint] Failed to load optimizer state: {e}")
+    else:
+        logger.warning(f"[load_checkpoint] No optimizer state found in checkpoint {path}")
 
     global_step = ckpt.get("global_step", 0)
     epoch = ckpt.get("epoch", None)
