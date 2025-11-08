@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, os, yaml, torch, logging
 import wandb
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from training.stage0_pm import train_stage0_pm
 from training.stage1 import train_stage1
@@ -9,7 +9,7 @@ from training.stage2 import train_stage2
 from data.dataset import FastMRIMaskedAbsDataset
 from data.LFHF_dataset import LFHFAbsPairDataset  
 from models.engrf import ENGRFAbs
-from util.checkpoint import get_outdir
+from util.checkpoint import get_outdir, save_ckpt
 logger = logging.getLogger(__name__)
 
 
@@ -30,16 +30,23 @@ def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str):
     ckpt = torch.load(ckpt_path, map_location=device)
     ckpt_cfg = ckpt.get("config", ckpt.get("cfg", fallback_cfg))
     model = ENGRFAbs(ckpt_cfg)
-    state = ckpt.get("state_dict", ckpt)
+    if "state_dict" in ckpt:
+        state = ckpt.get("state_dict", ckpt)
+    elif "model_state_dict" in ckpt:
+        state = ckpt.get("model_state_dict", ckpt)
+    else:
+        raise ValueError(f"[load_pretrained] Checkpoint {ckpt_path} does not contain a state_dict")
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
         logger.info(f"[load_pretrained] Loaded with non-strict state_dict (missing={len(missing)}, unexpected={len(unexpected)})")
+        logger.info(f"[load_pretrained] Missing: {missing}")
+        logger.info(f"[load_pretrained] unexpected: {unexpected}")
     else:
         logger.info(f"[load_pretrained] Success loaded model from {ckpt_path}")
     return model
 
 
-def make_datasets(cfg):
+def make_datasets(cfg, overfit=False):
     kind = cfg["data"].get("kind", "fastmri_mask")
     if kind == "fastmri_mask":
         logger.info("FASTMRI_MASK_DATASET")
@@ -93,6 +100,12 @@ def make_datasets(cfg):
         )
     else:
         raise ValueError(f"Unknown dataset kind: {kind}")
+    
+    if overfit:
+        overfit_indices = [400] * 200
+        train_ds = Subset(train_ds, overfit_indices)
+        val_ds = train_ds
+
     return train_ds, val_ds # overfitting check val_ds no include
 
 def to_wandb_id(out_dir: str) -> str:
@@ -105,6 +118,7 @@ def main():
     setup_logging(verbosity=1)
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/config_swinir_hourglass.yaml")
+    ap.add_argument("--seed", type=int, default=42, help="Random seed.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--stage", type=int, choices=[0, 1, 2], default=2)
     ap.add_argument("--ckpt", 
@@ -116,13 +130,16 @@ def main():
     ap.add_argument("--resume", action="store_true", help="Automatically load latest checkpoint in latest run directory. This uses the latest run with highest X for run_X as the output directory.")
     ap.add_argument("--resume_dir", type=str, default=None, help="Specify which run directory to load latest checkpoint from. This uses the specified run directory as the output directory.")
     ap.add_argument("--wandb_id", type=str, default=None, help="Specify which wandb id to use.")
+    ap.add_argument("--overfit", action="store_true", help="Overfit on a single example.")
     args = ap.parse_args()
+
+    torch.manual_seed(args.seed)
 
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
 
     # dataset selection
-    train_ds, val_ds = make_datasets(cfg)
+    train_ds, val_ds = make_datasets(cfg, overfit=args.overfit)
 
     dl_tr = DataLoader(
         train_ds,
@@ -171,7 +188,8 @@ def main():
         resume="must" if args.resume_dir is not None else "allow",
     )
     wandb.define_metric("epoch")
-    wandb.define_metric("iter")
+    wandb.define_metric("iter") # step in epoch
+    wandb.define_metric("step") # global step
     logger.info(f"[wandb] Initialized with project={run.project}, name={out_dir}, dir={save_dir}")
 
     # Optional warm start

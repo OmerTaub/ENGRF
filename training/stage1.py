@@ -344,6 +344,7 @@ def train_stage1(
         ckpt_resume_dir = os.path.join(args.resume_dir, "ckpts_stage1") if args.resume_dir is not None else ckpt_dir
         logger.info(f"[Stage1] Trying to resuming from directory: {ckpt_resume_dir}")
         latest_ckpt, model, opt, global_step, start_epoch = load_latest_checkpoint(ckpt_resume_dir, model, opt, device)
+        logger.info(f"[Stage1] Found checkpoint: {latest_ckpt} global_step: {global_step} start_epoch: {start_epoch}")
         if global_step == 0 and start_epoch > 1:
             global_step = (start_epoch - 1) * len(train_loader)
         logger.info(f"[Stage1] Resuming from {latest_ckpt} at epoch {start_epoch} (global_step={global_step})")
