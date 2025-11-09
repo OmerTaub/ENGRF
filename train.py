@@ -102,7 +102,7 @@ def make_datasets(cfg, overfit=False):
         raise ValueError(f"Unknown dataset kind: {kind}")
     
     if overfit:
-        overfit_indices = [400] * 200
+        overfit_indices = [i for i in range(400,500)] * 4
         train_ds = Subset(train_ds, overfit_indices)
         val_ds = train_ds
 
