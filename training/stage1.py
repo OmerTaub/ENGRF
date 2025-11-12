@@ -335,6 +335,11 @@ def train_stage1(
 
     n_trainable = _count_params(model.rf, trainable_only=True)
     logger.info(f"[Stage1] Trainable RF params: {n_trainable:,}")
+    total_rf_tensors = sum(1 for _, p in model.rf.named_parameters() if p.requires_grad)
+    logger.info(f"[Stage1] Trainable RF tensors: {total_rf_tensors}")
+    logger.info(f"[Stage1] PMRF sigma s: {model.pmrf_sigma_s}")
+    logger.info(f"[Stage1] PMRF only: {model.pmrf_only}")
+
 
     opt = torch.optim.AdamW(model.rf.parameters(), lr=lr, weight_decay=wd)
     scaler = GradScaler(enabled=amp)
@@ -361,9 +366,24 @@ def train_stage1(
         run_loss, run_cnt = 0.0, 0
         all_train_psnr = []
         all_train_ssim = []
+        run_gn_sum, run_gn_cnt = 0.0, 0
 
         for it, batch in enumerate(pbar, 1):
             opt.zero_grad(set_to_none=True)
+
+            # For parameter-change inspection: capture weights only on logging iterations
+            pre_step_weights = None
+            params_changed = None
+            param_mean_abs_diff = None
+            param_max_abs_diff = None
+            capture_for_log = (it % log_interval) == 0
+            if capture_for_log:
+                with torch.no_grad():
+                    pre_step_weights = {
+                        name: p.detach().clone()
+                        for name, p in model.rf.named_parameters()
+                        if p.requires_grad
+                    }
 
             loss, logs = _fm_step(model, batch, amp=amp, eps_t=eps_t)
 
@@ -371,13 +391,44 @@ def train_stage1(
                 scaler.scale(loss).backward()
                 # Unscale gradients before clipping so the threshold is meaningful
                 scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.rf.parameters(), grad_clip)
+                grad_total_norm = torch.nn.utils.clip_grad_norm_(model.rf.parameters(), grad_clip)
                 scaler.step(opt)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.rf.parameters(), grad_clip)
+                grad_total_norm = torch.nn.utils.clip_grad_norm_(model.rf.parameters(), grad_clip)
+
                 opt.step()
+
+            # If we captured pre-step weights for this iteration, compute which changed
+            if pre_step_weights is not None:
+                with torch.no_grad():
+                    changed_count = 0
+                    total_abs_diff = 0.0
+                    total_elems = 0
+                    max_abs_diff = 0.0
+                    for name, p in model.rf.named_parameters():
+                        if not p.requires_grad:
+                            continue
+                        prev = pre_step_weights.get(name, None)
+                        if prev is None:
+                            continue
+                        diff = (p.detach() - prev).abs()
+                        if diff.max().item() > 0.0:
+                            changed_count += 1
+                        total_abs_diff += diff.sum().item()
+                        total_elems += diff.numel()
+                        max_abs_diff = max(max_abs_diff, diff.max().item())
+                    params_changed = changed_count
+                    param_mean_abs_diff = (total_abs_diff / max(total_elems, 1)) if total_elems > 0 else float("nan")
+                    param_max_abs_diff = max_abs_diff
+
+            # Accumulate gradient norm stats
+            try:
+                run_gn_sum += float(grad_total_norm)
+                run_gn_cnt += 1
+            except Exception:
+                pass
 
             # Compute metrics for display (using RF sampler)
             with torch.no_grad():
@@ -402,10 +453,24 @@ def train_stage1(
 
             if (it % log_interval) == 0:
                 avg = run_loss / max(run_cnt, 1)
-                logger.info(f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f}")
+                avg_gn = (run_gn_sum / max(run_gn_cnt, 1)) if run_gn_cnt > 0 else float("nan")
+                # Parameter change stats (computed this iteration only)
+                pc = params_changed if params_changed is not None else float("nan")
+                pmean = param_mean_abs_diff if param_mean_abs_diff is not None else float("nan")
+                pmax = param_max_abs_diff if param_max_abs_diff is not None else float("nan")
+                logger.info(
+                    f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f} grad_norm={avg_gn:.4f} "
+                    f"params_changed={pc} mean_param_abs_diff={pmean:.6e} max_param_abs_diff={pmax:.6e}"
+                )
                 if WANDB:
                     wandb.log({
                         "train/fm_loss": avg,
+                        "train/grad_norm": avg_gn,
+                        "train/params_changed": pc,
+                        "train/param_mean_abs_diff": pmean,
+                        "train/param_max_abs_diff": pmax,
+                        "train/psnr": avg_psnr,
+                        "train/ssim": avg_ssim,
                         "epoch": ep,
                         "iter": it,
                         "step": global_step,
