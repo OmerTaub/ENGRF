@@ -1,6 +1,6 @@
 # training/stage2.py
 from __future__ import annotations
-import os, math, logging, argparse
+import os, math, logging
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -8,7 +8,6 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
-from util.checkpoint import load_latest_checkpoint, save_ckpt
 from models.engrf import ENGRFAbs
 try:
     import wandb
@@ -113,14 +112,12 @@ def _gfm_step(
     model: ENGRFAbs,
     batch: Dict[str, torch.Tensor],
     lambda_conjugacy: float,
-    amp: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     One training/validation step for Stage-2 (gauge-FM with tied conjugacy).
-    The tied form guarantees endpoint neutrality; 'lambda_conjugacy' is kept for API symmetry.
+    Autocast is handled by the caller to ensure consistent dtype (fp16/bf16).
     """
-    with autocast(enabled=amp):
-        loss, logs = model.compute_stage2(batch, lambda_conjugacy=lambda_conjugacy)
+    loss, logs = model.compute_stage2(batch, lambda_conjugacy=lambda_conjugacy)
     return loss, logs
 
 # ----------------------------- Train API ----------------------------- #
@@ -130,8 +127,7 @@ def train_stage2(
     train_loader: DataLoader,
     val_loader: Optional[DataLoader],
     device: str = "cuda",
-    pretrained: Optional[ENGRFAbs] = None,
-    args: argparse.Namespace = None,
+    pretrained: Optional[ENGRFAbs] = None
 ) -> ENGRFAbs:
     """
     Stage-2 trainer: learns the gauge flow h_t^Y (and optionally fine-tunes RF) via gauged FM.
@@ -144,7 +140,7 @@ def train_stage2(
     trn = cfg.get("train", {})
     exp = cfg.get("experiment", {})
 
-    out_dir = trn["save_dir"]
+    out_dir  = trn.get("out_dir", exp.get("out_dir", "./outputs"))
     ckpt_dir = os.path.join(out_dir, "ckpts_stage2")
     viz_dir  = os.path.join(out_dir, "viz_stage2")
     os.makedirs(out_dir, exist_ok=True)
@@ -156,6 +152,8 @@ def train_stage2(
     os.makedirs(viz_train_dir, exist_ok=True)
 
     amp           = bool(trn.get("amp", True))
+    amp_dtype_s   = str(trn.get("amp_dtype", "float16")).lower()
+    _amp_dtype    = torch.bfloat16 if amp_dtype_s in ("bf16", "bfloat16") else torch.float16
     epochs        = int(trn.get("epochs_stage2", 50))
     lr            = float(trn.get("lr_stage2", 1e-4))
     wd            = float(trn.get("weight_decay", 1e-4))
@@ -183,18 +181,7 @@ def train_stage2(
     logger.info(f"[Stage2] Trainable params — gauge: {n_gauge:,} | rf(ft={ft_rf}): {n_rf_ft:,}")
 
     opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=wd)
-    scaler = GradScaler(enabled=amp)
-
-    if args.resume or args.resume_dir is not None:
-        logger.info(f"[Stage2] Trying to resuming from directory: {ckpt_resume_dir}")
-        ckpt_resume_dir = os.path.join(args.resume_dir, "ckpts_stage2") if args.resume_dir is not None else ckpt_dir
-        latest_ckpt, model, opt, global_step, start_epoch = load_latest_checkpoint(ckpt_resume_dir, model, opt, device)
-        if global_step == 0 and start_epoch > 1:
-            global_step = (start_epoch - 1) * len(train_loader)
-        logger.info(f"[Stage2] Resuming from {latest_ckpt} at epoch {start_epoch} (global_step={global_step})")
-    else:
-        global_step = 0
-        start_epoch = 1
+    scaler = GradScaler(enabled=(amp and _amp_dtype == torch.float16))
 
     # ---- one-time endpoint neutrality sanity check ----
     if hasattr(model, "check_h_identity"):
@@ -206,20 +193,23 @@ def train_stage2(
     best_val = math.inf
 
     # ------------------------- Epoch Loop -------------------------- #
-    for ep in range(start_epoch, epochs + 1):
+    for ep in range(1, epochs + 1):
         model.train()
         pbar = tqdm(train_loader, desc=f"[Stage2-Gauge] Epoch {ep}/{epochs}", leave=False)
         run_loss, run_cnt = 0.0, 0
-        all_train_psnr = []
-        all_train_ssim = []
+        train_psnr_sum, train_psnr_cnt = 0.0, 0
+        train_ssim_sum, train_ssim_cnt = 0.0, 0
 
         for it, batch in enumerate(pbar, 1):
             opt.zero_grad(set_to_none=True)
 
-            loss, logs = _gfm_step(model, batch, lambda_conjugacy=lam_resid, amp=amp)
+            with autocast(enabled=amp, dtype=_amp_dtype):
+                loss, logs = _gfm_step(model, batch, lambda_conjugacy=lam_resid)
 
-            if amp:
+            if amp and _amp_dtype == torch.float16:
                 scaler.scale(loss).backward()
+                # Unscale before clipping so the threshold is meaningful
+                scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), grad_clip)
                 scaler.step(opt)
                 scaler.update()
@@ -228,26 +218,29 @@ def train_stage2(
                 torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), grad_clip)
                 opt.step()
 
-            # Compute metrics for display (using full gauge+RF sampler)
-            with torch.no_grad():
-                x = batch["x"].to(device)
-                y = batch["y"].to(device)
-                x_out = model.sample(y, steps=sample_steps)
-                x_clamp = x.clamp(0, 1)
-                x_out_clamp = x_out.clamp(0, 1)
-                psnr_b = _psnr(x_out_clamp, x_clamp)
-                ssim_b = _ssim(x_out_clamp, x_clamp)
-                all_train_psnr.append(psnr_b.cpu())
-                all_train_ssim.append(ssim_b.cpu())
+            # Compute metrics for display less frequently to avoid per-iter heavy sampling
+            if (it % log_interval) == 0:
+                with torch.no_grad():
+                    x = batch["x"].to(device)[:1]  # evaluate on one item to reduce cost
+                    y = batch["y"].to(device)[:1]
+                    with autocast(enabled=amp, dtype=_amp_dtype):
+                        x_out = model.sample(y, steps=sample_steps)
+                    x_clamp = x.clamp(0, 1)
+                    x_out_clamp = x_out.clamp(0, 1)
+                    psnr_b = _psnr(x_out_clamp, x_clamp).mean().item()
+                    ssim_b = _ssim(x_out_clamp, x_clamp).mean().item()
+                    train_psnr_sum += psnr_b
+                    train_psnr_cnt += 1
+                    train_ssim_sum += ssim_b
+                    train_ssim_cnt += 1
 
             bs = batch["x"].size(0)
             run_loss += float(loss.detach().cpu()) * bs
             run_cnt  += bs
-            global_step += 1
 
             # Compute running averages
-            avg_psnr = torch.cat(all_train_psnr).mean().item() if all_train_psnr else 0
-            avg_ssim = torch.cat(all_train_ssim).mean().item() if all_train_ssim else 0
+            avg_psnr = (train_psnr_sum / max(train_psnr_cnt, 1)) if train_psnr_cnt > 0 else 0.0
+            avg_ssim = (train_ssim_sum / max(train_ssim_cnt, 1)) if train_ssim_cnt > 0 else 0.0
 
             if (it % log_interval) == 0:
                 logger.info(f"[Stage2][Ep {ep}] it={it} gfm={logs.get('gfm_loss', float('nan')):.6f} "
@@ -258,7 +251,6 @@ def train_stage2(
                         "train/conj_resid": logs.get("conj_resid"),
                         "epoch": ep,
                         "iter": it,
-                        "step": global_step,
                     })
             pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
 
@@ -272,7 +264,8 @@ def train_stage2(
             with torch.no_grad():
                 vbar = tqdm(val_loader, desc=f"[Stage2-Gauge][Val] Epoch {ep}", leave=False)
                 for vb in vbar:
-                    vloss, vlogs = _gfm_step(model, vb, lambda_conjugacy=lam_resid, amp=False)
+                    with autocast(enabled=amp, dtype=_amp_dtype):
+                        vloss, vlogs = _gfm_step(model, vb, lambda_conjugacy=lam_resid)
                     bs = vb["x"].size(0)
                     tot += float(vloss.detach().cpu()) * bs
                     n   += bs
@@ -280,7 +273,8 @@ def train_stage2(
                     # Calculate PSNR, SSIM, NMSE
                     x = vb["x"].to(device)
                     y = vb["y"].to(device)
-                    x_out = model.sample(y, steps=sample_steps)
+                    with autocast(enabled=amp, dtype=_amp_dtype):
+                        x_out = model.sample(y, steps=sample_steps)
                     x_clamp = x.clamp(0, 1)
                     x_out_clamp = x_out.clamp(0, 1)
                     
@@ -318,15 +312,7 @@ def train_stage2(
             if val_avg < best_val:
                 best_val = val_avg
                 path = os.path.join(ckpt_dir, f"best_stage2_ep{ep:03d}.pt")
-                save_ckpt(
-                    path,
-                    model.state_dict(),
-                    opt.state_dict(),
-                    global_step=global_step,
-                    epoch=ep,
-                    config=cfg,
-                    val_gfm_loss=best_val
-                )
+                torch.save({"state_dict": model.state_dict(), "config": cfg, "val_gfm_loss": best_val}, path)
                 logger.info(f"[Stage2] Saved best checkpoint to: {path}")
 
             # ------------------------- Visualization ------------------------- #
@@ -384,14 +370,7 @@ def train_stage2(
         # ---------------------------- Last save ---------------------------- #
         if ep == epochs:
             path = os.path.join(ckpt_dir, f"last_stage2_ep{ep:03d}.pt")
-            save_ckpt(
-                path,
-                model.state_dict(),
-                opt.state_dict(),
-                global_step=global_step,
-                epoch=ep,
-                config=cfg,
-            )
+            torch.save({"state_dict": model.state_dict(), "config": cfg}, path)
             logger.info(f"[Stage2] Saved last checkpoint to: {path}")
 
     return model
