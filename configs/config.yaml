@@ -26,7 +26,7 @@ data:
 model:
   pmrf_only: True        # <- remove trailing comma; lower-case booleans are fine
   posterior_mean: swinir # Options: unet, swinir
-  # pmrf_sigma_s: 0.0
+  pmrf_sigma_s: 0.03
   
   # Posterior Mean: SwinIR configuration
   pm_swinir:
@@ -113,6 +113,7 @@ train:
   epochs_stage1: 100
   epochs_stage2: 100
   log_interval: 500000
+  save_every: 0.5 # save every 50% of epoch
   val_every: 1
   vis_every: 1
   vis_n: 5

@@ -322,7 +322,8 @@ def train_stage1(
     vis_n         = int(trn.get("vis_n", 2))              # number of panels per val viz
     sample_steps  = int(trn.get("sample_steps_stage1", 50))# RF Euler steps for viz
     eps_t         = float(trn.get("t_eps", 0.0))           # avoid endpoints if you wish
-
+    save_every    = float(trn.get("save_every", 0.5)) # save every 50% of epoch
+    save_every    = int(save_every * len(train_loader))
     # Build or warm-start ENGRFAbs; RF will be trained, PM frozen
     model = pretrained if pretrained is not None else ENGRFAbs(cfg)
     model = model.to(device)
@@ -335,6 +336,7 @@ def train_stage1(
 
     n_trainable = _count_params(model.rf, trainable_only=True)
     logger.info(f"[Stage1] Trainable RF params: {n_trainable:,}")
+    logger.info(f"[Stage1] Total model params: {_count_params(model):,}")
     total_rf_tensors = sum(1 for _, p in model.rf.named_parameters() if p.requires_grad)
     logger.info(f"[Stage1] Trainable RF tensors: {total_rf_tensors}")
     logger.info(f"[Stage1] PMRF sigma s: {model.pmrf_sigma_s}")
@@ -349,6 +351,8 @@ def train_stage1(
         ckpt_resume_dir = os.path.join(args.resume_dir, "ckpts_stage1") if args.resume_dir is not None else ckpt_dir
         logger.info(f"[Stage1] Trying to resuming from directory: {ckpt_resume_dir}")
         latest_ckpt, model, opt, global_step, start_epoch = load_latest_checkpoint(ckpt_resume_dir, model, opt, device)
+        for g in opt.param_groups:
+            g["lr"] = lr
         logger.info(f"[Stage1] Found checkpoint: {latest_ckpt} global_step: {global_step} start_epoch: {start_epoch}")
         if global_step == 0 and start_epoch > 1:
             global_step = (start_epoch - 1) * len(train_loader)
@@ -391,12 +395,21 @@ def train_stage1(
                 # Unscale gradients before clipping so the threshold is meaningful
                 scaler.unscale_(opt)
                 grad_total_norm = torch.nn.utils.clip_grad_norm_(model.rf.parameters(), grad_clip)
+                if grad_total_norm == float("inf"):
+                    logger.warning(f"[Stage1] Grad total norm is infinite, skipping step {it} of epoch {ep}")
+                    # save the batch that caused the infinite grad
+                    torch.save(batch, os.path.join(out_dir, f"infinite_grad_batch_ep{ep:03d}_it{it:05d}.pt"))
+                    continue
                 scaler.step(opt)
                 scaler.update()
             else:
                 loss.backward()
                 grad_total_norm = torch.nn.utils.clip_grad_norm_(model.rf.parameters(), grad_clip)
-
+                if grad_total_norm == float("inf"):
+                    logger.warning(f"[Stage1] Grad total norm is infinite, skipping step {it} of epoch {ep}")
+                    # save the batch that caused the infinite grad
+                    torch.save(batch, os.path.join(out_dir, f"infinite_grad_batch_ep{ep:03d}_it{it:05d}.pt"))
+                    continue
                 opt.step()
 
             # If we captured pre-step weights for this iteration, compute which changed
@@ -468,7 +481,19 @@ def train_stage1(
                         "step": global_step,
                     })
 
-            pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}", grad_norm=f"{gn:.4f}")
+            pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.5f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}", grad_norm=f"{gn:.4f}")
+
+            if (it % save_every == 0):
+                path = os.path.join(ckpt_dir, f"stage1_ep{ep:03d}_it{it:05d}.pt")
+                save_ckpt(
+                    path,
+                    model.state_dict(),
+                    opt.state_dict(),
+                    global_step=global_step,
+                    epoch=ep,
+                    config=cfg,
+                )
+                logger.info(f"[Stage1] Saved periodic checkpoint to: {path}")
 
         # ------------------------- Validation ------------------------- #
         if val_loader is not None and (ep % val_every == 0):

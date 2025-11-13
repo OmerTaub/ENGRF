@@ -43,7 +43,7 @@ class ENGRFAbs(nn.Module):
             cfg_name = "pm_unet"
             
         self.pm = PosteriorMean(mcfg["posterior_mean"], mcfg[cfg_name])
-        self.pmrf_sigma_s = 0.03
+        self.pmrf_sigma_s = mcfg.get("pmrf_sigma_s", 0.03)
         self.pmrf_only = False
         # Baseline rectified flow v_theta
         self.rf = RectifiedFlow(**mcfg["rf_unet"])

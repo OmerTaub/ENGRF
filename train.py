@@ -28,7 +28,8 @@ def load_pretrained(ckpt_path: str, fallback_cfg: dict, device: str):
         logger.warning(f"[load_pretrained] Checkpoint not found: {ckpt_path}")
         return None
     ckpt = torch.load(ckpt_path, map_location=device)
-    ckpt_cfg = ckpt.get("config", ckpt.get("cfg", fallback_cfg))
+    # ckpt_cfg = ckpt.get("config", ckpt.get("cfg", fallback_cfg))
+    ckpt_cfg = fallback_cfg
     model = ENGRFAbs(ckpt_cfg)
     if "state_dict" in ckpt:
         state = ckpt.get("state_dict", ckpt)
