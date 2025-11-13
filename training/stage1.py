@@ -366,7 +366,6 @@ def train_stage1(
         run_loss, run_cnt = 0.0, 0
         all_train_psnr = []
         all_train_ssim = []
-        run_gn_sum, run_gn_cnt = 0.0, 0
 
         for it, batch in enumerate(pbar, 1):
             opt.zero_grad(set_to_none=True)
@@ -423,13 +422,6 @@ def train_stage1(
                     param_mean_abs_diff = (total_abs_diff / max(total_elems, 1)) if total_elems > 0 else float("nan")
                     param_max_abs_diff = max_abs_diff
 
-            # Accumulate gradient norm stats
-            try:
-                run_gn_sum += float(grad_total_norm)
-                run_gn_cnt += 1
-            except Exception:
-                pass
-
             # Compute metrics for display (using RF sampler)
             with torch.no_grad():
                 x = batch["x"].to(device)
@@ -450,22 +442,22 @@ def train_stage1(
             # Compute running averages
             avg_psnr = torch.cat(all_train_psnr).mean().item() if all_train_psnr else 0
             avg_ssim = torch.cat(all_train_ssim).mean().item() if all_train_ssim else 0
+            gn = float(grad_total_norm.detach().float().cpu()) if torch.isfinite(grad_total_norm) else float("inf")
 
             if (it % log_interval) == 0:
                 avg = run_loss / max(run_cnt, 1)
-                avg_gn = (run_gn_sum / max(run_gn_cnt, 1)) if run_gn_cnt > 0 else float("nan")
                 # Parameter change stats (computed this iteration only)
                 pc = params_changed if params_changed is not None else float("nan")
                 pmean = param_mean_abs_diff if param_mean_abs_diff is not None else float("nan")
                 pmax = param_max_abs_diff if param_max_abs_diff is not None else float("nan")
                 logger.info(
-                    f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f} grad_norm={avg_gn:.4f} "
+                    f"[Stage1][Ep {ep}] it={it} fm_loss={avg:.6f} grad_norm={gn:.4f}, PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.3f} "
                     f"params_changed={pc} mean_param_abs_diff={pmean:.6e} max_param_abs_diff={pmax:.6e}"
                 )
                 if WANDB:
                     wandb.log({
                         "train/fm_loss": avg,
-                        "train/grad_norm": avg_gn,
+                        "train/grad_norm": gn,
                         "train/params_changed": pc,
                         "train/param_mean_abs_diff": pmean,
                         "train/param_max_abs_diff": pmax,
@@ -476,7 +468,7 @@ def train_stage1(
                         "step": global_step,
                     })
 
-            pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
+            pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}", grad_norm=f"{gn:.4f}")
 
         # ------------------------- Validation ------------------------- #
         if val_loader is not None and (ep % val_every == 0):

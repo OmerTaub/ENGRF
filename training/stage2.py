@@ -223,12 +223,12 @@ def train_stage2(
                 scaler.scale(loss).backward()
                 # Unscale before clipping so the threshold is meaningful
                 scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), grad_clip)
+                grad_total_norm = torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), grad_clip)
                 scaler.step(opt)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), grad_clip)
+                grad_total_norm = torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), grad_clip)
                 opt.step()
 
             # Compute metrics for display less frequently to avoid per-iter heavy sampling
@@ -255,14 +255,18 @@ def train_stage2(
             # Compute running averages
             avg_psnr = (train_psnr_sum / max(train_psnr_cnt, 1)) if train_psnr_cnt > 0 else 0.0
             avg_ssim = (train_ssim_sum / max(train_ssim_cnt, 1)) if train_ssim_cnt > 0 else 0.0
+            grad_total_norm = float(grad_total_norm.detach().float().cpu()) if torch.isfinite(grad_total_norm) else float("inf")
 
             if (it % log_interval) == 0:
                 logger.info(f"[Stage2][Ep {ep}] it={it} gfm={logs.get('gfm_loss', float('nan')):.6f} "
-                            f"resid={logs.get('conj_resid', float('nan')):.6f}")
+                            f"resid={logs.get('conj_resid', float('nan')):.6f} grad_norm={grad_total_norm:.4f}, PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.3f}")
                 if WANDB:
                     wandb.log({
                         "train/gfm_loss": logs.get("gfm_loss"),
                         "train/conj_resid": logs.get("conj_resid"),
+                        "train/grad_norm": grad_total_norm,
+                        "train/psnr": avg_psnr,
+                        "train/ssim": avg_ssim,
                         "epoch": ep,
                         "iter": it,
                         "step": global_step,

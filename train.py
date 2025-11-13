@@ -192,6 +192,8 @@ def main():
     wandb.define_metric("step") # global step
     logger.info(f"[wandb] Initialized with project={run.project}, name={out_dir}, dir={save_dir}")
 
+    logger.info(f"config:\n {cfg}")
+
     # Optional warm start
     pretrained = load_pretrained(args.ckpt, cfg, args.device)
 

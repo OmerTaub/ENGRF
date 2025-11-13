@@ -295,12 +295,12 @@ def train_stage0_pm(
                 scaler.scale(loss).backward()
                 # Unscale before clipping so clipping threshold isn't applied to scaled grads
                 scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.pm.parameters(), grad_clip)
+                grad_total_norm = torch.nn.utils.clip_grad_norm_(model.pm.parameters(), grad_clip)
                 scaler.step(opt)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.pm.parameters(), grad_clip)
+                grad_total_norm = torch.nn.utils.clip_grad_norm_(model.pm.parameters(), grad_clip)
                 opt.step()
 
             # Compute metrics for display
@@ -323,17 +323,21 @@ def train_stage0_pm(
             # Compute running averages
             avg_psnr = torch.cat(all_train_psnr).mean().item() if all_train_psnr else 0
             avg_ssim = torch.cat(all_train_ssim).mean().item() if all_train_ssim else 0
+            grad_total_norm = float(grad_total_norm.detach().float().cpu()) if torch.isfinite(grad_total_norm) else float("inf")
 
             if (it % log_interval) == 0:
                 logger.info(f"[Stage0][Ep {ep}] it={it} pm_loss={(run_loss/max(run_cnt,1)):.6f}")
                 if WANDB:
                     wandb.log({
                         "train/pm_loss": (run_loss/max(run_cnt,1)),
+                        "train/grad_norm": grad_total_norm,
+                        "train/psnr": avg_psnr,
+                        "train/ssim": avg_ssim,
                         "epoch": ep,
                         "iter": it,
                         "step": global_step,
                     })
-            pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}")
+            pbar.set_postfix(loss=f"{(run_loss/max(run_cnt,1)):.4f}", PSNR=f"{avg_psnr:.2f}", SSIM=f"{avg_ssim:.3f}", grad_norm=f"{grad_total_norm:.4f}")
 
         # ----------------------------- validate ---------------------------- #
         if val_loader is not None and (ep % val_every == 0):
